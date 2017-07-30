@@ -1,35 +1,25 @@
-var express = require('express');
-var router = express.Router();
+const express = require('express');
+const router = express.Router();
 
-var Promise = require('bluebird');
-var Twitter = require('twitter');
-var cron = require('cron');
-var _ = require('lodash');
+const Promise = require('bluebird');
+const Twitter = require('twitter');
+const cron = require('cron');
+const _ = require('lodash');
+const helper = require('sendgrid').mail;
+const sg = require('sendgrid')(process.env.SENDGRID_API_KEY);
 
 var oldFollowers = [];
 var newFollowers = [];
 
-var client = new Twitter({
-	consumer_key: 'LBYuxSAGxVpSxm4rRLdAU55er',
-	consumer_secret: 'B9hJVRwjYEdna8FVBtSI1FvAZlHE80xHEYHA29xnSlzOUryMNc',
-	access_token_key: '3290333605-vK3tEpPO2vipE5I4RBIpKo9nr2pulUdK7tLy3YU',
-	access_token_secret: 'IVDT5nFgIFgdN05oCMfiw0rPjUwfQBVIkmEQO3z2wN4Wd'
+const client = new Twitter({
+	consumer_key: process.env.CONSUMER_KEY,
+	consumer_secret: process.env.CONSUMER_SECRET,
+	access_token_key: process.env.ACCESS_TOKEN_KEY,
+	access_token_secret: process.env.ACCESS_TOKEN_SECRET
 });
 
-
-getFollowers('navendusaini')
-.then(result => {
-	console.log(result["ids"].length);
-	return result;
-})
-.then(getNames)
-.then(result => {
-	console.log(result);
-	oldFollowers = result
-})	
-.catch(handleError);
-
-// cron pattern for every midnight: 0 0 * * * 
+// cron pattern for every midnight: 0 0 * * *
+// cron pattern for every minute: * * * * *
 new cron.CronJob('* * * * *', () => {
 	console.log("running cron job...");
 
@@ -38,12 +28,12 @@ new cron.CronJob('* * * * *', () => {
 	.then(result => {
 		oldFollowers = newFollowers;
 		newFollowers = result;
+		console.log(newFollowers);
 	})
 	.then(computeDifference)
-	.then(checkEmptyArray)
-	.then(boolVal => {
-		console.log(bool);
-	})	
+	.then(lostFollowers => {
+		sendEmail(lostFollowers);
+	})
 	.catch(handleError);
 }, null, true, 'America/Los_Angeles');
 
@@ -53,20 +43,43 @@ function computeDifference() {
 	});
 }
 
-// Used to check if A - B is empty
-function checkEmptyArray(array) {
-	return new Promise((resolve, reject) => {
-		resolve(array.length == 0);
-	});
-}
-
 // incorporate SendGrid API
-function sendEmail(empty) {
+function sendEmail(listOfUnfollowers) {
 	return new Promise((resolve, reject) => {
-		if (empty) resolve(false);
+		if (listOfUnfollowers.length === 0) resolve(false);
+		else {
+			try {
+				// assemble the email
+				const fromEmail = new helper.Email('unfollow_notify@gmail.com');
+				const toEmail = new helper.Email(process.env.TO_EMAIL);
+				const subject = 'You lost followers on Twitter :(';
+				const content = new helper.Content('text/plain', 'Users with the usernames: ' +
+					listOfUnfollowers + ' have unfollowed you on Twitter.');
 
+				const mail = new helper.Mail(fromEmail, subject, toEmail, content);
 
+				// assemble the request
+				const request = sg.emptyRequest({
+				  method: 'POST',
+				  path: '/v3/mail/send',
+				  body: mail.toJSON()
+				});
 
+				// make the API call
+				sg.API(request, function (error, response) {
+				  if (error) {
+				    console.log('Error response received');
+				  }
+				  console.log(response.statusCode);
+				  console.log(response.body);
+				  console.log(response.headers);
+					resolve(true)
+				});
+
+			} catch(error) {
+				resolve(false);
+			}
+		}
 	});
 }
 
@@ -79,7 +92,7 @@ function getFollowers(screenName) {
 		})
 		.catch(err => reject(err));
 	});
-}	
+}
 
 // Get follower names from ids
 function getNames(ids) {
